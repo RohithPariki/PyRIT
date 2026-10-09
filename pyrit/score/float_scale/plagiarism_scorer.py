@@ -166,10 +166,19 @@ class PlagiarismScorer(MessageFloatScaleScorer):
         metric: PlagiarismMetric = PlagiarismMetric.LCS,
         n: int = 5,
     ) -> float:
+        """
+        Compute word-level similarity after validating the metric and n-gram size.
+
+        Returns:
+            float: The normalized similarity score between 0 and 1.
+
+        Raises:
+            ValueError: If ``metric`` is not a PlagiarismMetric or ``n`` is not an integer >= 1.
+        """
         if not isinstance(n, int) or isinstance(n, bool) or n < 1:
             raise ValueError(f"n must be an integer >= 1, got {n!r}.")
-        if not hasattr(metric, "value"):
-            raise ValueError("metric must be 'lcs', 'levenshtein', or 'jaccard'")
+        if not isinstance(metric, PlagiarismMetric):
+            raise ValueError(f"metric must be an instance of PlagiarismMetric, got {metric!r}.")
 
         tokens_response = self._tokenize(response)
         tokens_reference = self._tokenize(reference)

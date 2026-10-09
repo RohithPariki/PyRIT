@@ -1,6 +1,7 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT license.
 
+from enum import Enum
 from unittest.mock import patch
 
 import pytest
@@ -9,6 +10,13 @@ from unit.mocks import mock_memory_resolving, store_message_async
 from pyrit.memory import CentralMemory
 from pyrit.models import MessagePiece
 from pyrit.score import MessageScorable, PlagiarismMetric, PlagiarismScorer
+
+
+class _OtherMetric(Enum):
+    LCS = "lcs"
+    LEVENSHTEIN = "levenshtein"
+    JACCARD = "jaccard"
+    INVALID = "invalid"
 
 
 @pytest.mark.usefixtures("patch_central_database")
@@ -71,7 +79,7 @@ class TestPlagiarismScorer:
 
     @pytest.mark.parametrize(
         "invalid_metric",
-        ["lcs", "levenshtein", "jaccard", "invalid", None, 123],
+        ["lcs", "levenshtein", "jaccard", "invalid", None, 123, *_OtherMetric],
     )
     def test_init_rejects_invalid_metric(self, invalid_metric):
         """Test initialization rejects metric that is not an instance of PlagiarismMetric."""
@@ -85,12 +93,18 @@ class TestPlagiarismScorer:
         with pytest.raises(ValueError, match=r"n must be an integer >= 1"):
             scorer._plagiarism_score(response="test", reference="test", n=invalid_n)
 
-    @pytest.mark.parametrize("invalid_metric", ["lcs", "levenshtein", None, 123])
-    def test_plagiarism_score_rejects_invalid_metric(self, invalid_metric):
+    @pytest.mark.parametrize("invalid_metric", ["lcs", "levenshtein", "jaccard", "invalid", None, 123, *_OtherMetric])
+    @pytest.mark.parametrize(
+        ("response", "reference"),
+        [("test", "test"), ("", "test"), ("test", ""), ("different", "test"), ("prefix test suffix", "test")],
+    )
+    def test_plagiarism_score_rejects_invalid_metric(
+        self, *, invalid_metric: object, response: str, reference: str
+    ) -> None:
         """Test _plagiarism_score rejects invalid metric."""
         scorer = PlagiarismScorer(reference_text="Valid reference text")
-        with pytest.raises(ValueError, match="metric must be 'lcs', 'levenshtein', or 'jaccard'"):
-            scorer._plagiarism_score(response="test", reference="test", metric=invalid_metric)
+        with pytest.raises(ValueError, match="metric must be an instance of PlagiarismMetric"):
+            scorer._plagiarism_score(response=response, reference=reference, metric=invalid_metric)
 
     async def test_score_async_lcs_metric(self):
         """Test scoring with LCS metric."""
@@ -383,15 +397,9 @@ class TestPlagiarismScorerUtilityFunctions:
         assert score == 0.0
 
     def test_plagiarism_score_invalid_metric(self, scorer):
-        """Test plagiarism score with mock invalid metric raises ValueError."""
-        from unittest.mock import MagicMock
-
-        # Create a mock metric that has an invalid value
-        mock_metric = MagicMock()
-        mock_metric.value = "invalid"
-
-        with pytest.raises(ValueError, match="metric must be 'lcs', 'levenshtein', or 'jaccard'"):
-            scorer._plagiarism_score("hello", "world", metric=mock_metric)
+        """Test plagiarism score rejects an unsupported enum."""
+        with pytest.raises(ValueError, match="metric must be an instance of PlagiarismMetric"):
+            scorer._plagiarism_score("hello", "world", metric=_OtherMetric.INVALID)
 
     def test_plagiarism_score_case_insensitive(self, scorer):
         """Test that plagiarism score is case insensitive."""
