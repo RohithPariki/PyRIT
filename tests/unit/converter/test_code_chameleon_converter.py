@@ -3,6 +3,8 @@
 
 import re
 
+import pytest
+
 from pyrit.converter import CodeChameleonConverter
 
 
@@ -74,8 +76,8 @@ def string_to_tree(problem_description):
         if node_dict is None:
             return None
         node = TreeNode(node_dict['value'])
-        node.left = helper(json.loads(node_dict['left'])) if node_dict['left'] else None
-        node.right = helper(json.loads(node_dict['right'])) if node_dict['right'] else None
+        node.left = helper(node_dict['left']) if node_dict['left'] else None
+        node.right = helper(node_dict['right']) if node_dict['right'] else None
         return node
 
     return helper(json.loads(problem_description))
@@ -143,7 +145,11 @@ async def test_codechameleon_converter_length_encrypt_decrypt() -> None:
         """
 The following is the decryption function.
 ```python
+import json
+
 def decryption(encrypted_problem):
+    if isinstance(encrypted_problem, str):
+        encrypted_problem = json.loads(encrypted_problem)
     # Create an empty sentence
     sentence = [''] * len(encrypted_problem)
     # Iterate through the list and place each word at the correct position
@@ -164,3 +170,25 @@ def test_codechameleon_converter_input_supported() -> None:
     converter = CodeChameleonConverter(encrypt_type="length")
     assert converter.input_supported("text") is True
     assert converter.input_supported("image_path") is False
+
+
+@pytest.mark.parametrize("encrypt_type", ["reverse", "odd_even", "binary_tree", "length"])
+async def test_codechameleon_converter_decryption_execution(encrypt_type: str) -> None:
+    prompt = "How to cut down a tree?"
+    converter = CodeChameleonConverter(encrypt_type=encrypt_type)
+    output = await converter.convert_async(prompt=prompt, input_type="text")
+
+    code_match = re.search(
+        r"The following is the decryption function\.\s*```python\n(.*?)\n```", output.output_text, re.DOTALL
+    )
+    assert code_match is not None
+    code = code_match.group(1)
+
+    problem_match = re.search(r"The encrypted_problem you need to solve is: (.*?)\n", output.output_text)
+    assert problem_match is not None
+    encrypted_problem = problem_match.group(1)
+
+    local_vars: dict = {}
+    exec(code, local_vars)
+    decrypted = local_vars["decryption"](encrypted_problem)
+    assert decrypted == prompt
