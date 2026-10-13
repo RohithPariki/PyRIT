@@ -57,7 +57,7 @@ class RepeatTokenConverter(Converter):
 
         mode = "split" if token_insert_mode is None else token_insert_mode
         valid_modes = {"split", "prepend", "append", "repeat"}
-        if mode not in valid_modes:
+        if not isinstance(mode, str) or mode not in valid_modes:
             raise ValueError(f"Invalid token_insert_mode '{token_insert_mode}'. Must be one of: {sorted(valid_modes)}.")
 
         self._token_to_repeat = " " + token_to_repeat.strip()

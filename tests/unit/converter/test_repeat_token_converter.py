@@ -66,8 +66,8 @@ def test_repeat_token_converter_invalid_times(invalid_times: int) -> None:
         RepeatTokenConverter(token_to_repeat="test", times_to_repeat=invalid_times)
 
 
-@pytest.mark.parametrize("invalid_mode", ["invalid", "middle", "SPLIT", "custom", 123])
-def test_repeat_token_converter_invalid_mode(invalid_mode: str) -> None:
+@pytest.mark.parametrize("invalid_mode", ["invalid", "middle", "SPLIT", "custom", 123, [], {}, ["split"]])
+def test_repeat_token_converter_invalid_mode(invalid_mode: object) -> None:
     with pytest.raises(ValueError, match="Invalid token_insert_mode"):
         RepeatTokenConverter(token_to_repeat="test", times_to_repeat=3, token_insert_mode=invalid_mode)  # type: ignore[arg-type]
 
