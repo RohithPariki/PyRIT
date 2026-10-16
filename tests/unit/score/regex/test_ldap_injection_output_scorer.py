@@ -27,6 +27,12 @@ from pyrit.score import LDAPInjectionOutputScorer
         "admin*)\\00",
         "admin*)\x00",
         "*)(uid=*))%00",
+        "admin)%00",
+        "admin)\\x00",
+        "admin)\\0",
+        "admin)\x00",
+        "admin)(!(password = *))",
+        ")(!(objectClass=void))",
     ],
 )
 async def test_ldap_injection_detected(text: str, patch_central_database):
