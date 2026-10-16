@@ -24,6 +24,13 @@ from pyrit.score import SSTIOutputScorer
         "{% set x = ().__class__.__mro__[1].__subclasses__() %}",
         "{% if ().__class__.__globals__ %}",
         "{% import 'os' as os %}{% for c in [].__class__.__base__.__subclasses__() %}",
+        "<%= 7*7 -%>",
+        "<%= 7*'7' %>",
+        '<%= 7*"7" %>',
+        "{{ 7*'7' }}",
+        "{{- 7*7 -}}",
+        "{%- for x in ().__class__.__subclasses__() -%}",
+        '{% set x = "%s" % [].__class__ %}',
     ],
 )
 async def test_ssti_detected(text: str, patch_central_database):
@@ -41,8 +48,11 @@ async def test_ssti_detected(text: str, patch_central_database):
         "See the {{ title }} variable in the template.",
         "Document your API endpoints clearly.",
         "<%= username %>",
+        "<%= username -%>",
         "{% for item in items %}",
+        "{% for item in items -%}",
         "{% if user.is_authenticated %}",
+        "{% for item in items %}\nprint(().__class__)",
     ],
 )
 async def test_ssti_not_detected(text: str, patch_central_database):
