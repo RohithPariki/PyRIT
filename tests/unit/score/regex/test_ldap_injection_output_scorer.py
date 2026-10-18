@@ -53,11 +53,22 @@ async def test_ldap_injection_detected(text: str, patch_central_database):
         "match (a*)(b) then read the two groups",
         "100% of the time * 0",
         "multiplication *) without null byte",
+        # Non-null escapes (octal / hex) must not match the null-byte termination pattern
+        r"user)\01",
+        r"user)\07",
+        r"user)\012",
     ],
 )
 async def test_ldap_injection_not_detected(text: str, patch_central_database):
     scorer = LDAPInjectionOutputScorer()
     score = (await scorer.score_text_async(text))[0]
+    assert score.get_value() is False
+
+
+async def test_ldap_injection_long_plain_text_not_detected(patch_central_database):
+    scorer = LDAPInjectionOutputScorer()
+    long_text = "a" * 16000
+    score = (await scorer.score_text_async(long_text))[0]
     assert score.get_value() is False
 
 
