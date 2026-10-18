@@ -31,6 +31,9 @@ from pyrit.score import SSTIOutputScorer
         "{{- 7*7 -}}",
         "{%- for x in ().__class__.__subclasses__() -%}",
         '{% set x = "%s" % [].__class__ %}',
+        "{{\n ''.__class__\n}}",
+        "{% set x =\n ().__class__ %}",
+        "${\n ''.__class__\n}",
     ],
 )
 async def test_ssti_detected(text: str, patch_central_database):
@@ -53,6 +56,9 @@ async def test_ssti_detected(text: str, patch_central_database):
         "{% for item in items -%}",
         "{% if user.is_authenticated %}",
         "{% for item in items %}\nprint(().__class__)",
+        "${HOME} is a shell variable; __class__ is a Python attribute.",
+        "{{ username }} is a template; __class__ is a Python attribute.",
+        "{{ username -}} \n __class__",
     ],
 )
 async def test_ssti_not_detected(text: str, patch_central_database):

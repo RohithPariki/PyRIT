@@ -29,7 +29,10 @@ class SSTIOutputScorer(_ConfigurableRegexScorerMixin, RegexScorer):
         ),
         # Python object-traversal gadget chain (sandbox escape) inside a template expression or statement block.
         "Python Gadget Chain": (
-            r"(?:\{\{[-+]?|\$\{|\{%[-+]?)(?:(?!%\}|\}\}).)*?__(?:class|mro|subclasses|globals|init|builtins|import)__"
+            r"(?:"
+            r"\$\{[^}]*?"
+            r"|(?:\{\{[-+]?|\{%[-+]?)(?:(?!(?:[-+]?%\}|[-+]?\}\}))[\s\S])*?"
+            r")__(?:class|mro|subclasses|globals|init|builtins|import)__"
         ),
     }
     _DEFAULT_CATEGORIES: tuple[str, ...] = ("security",)
