@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from pyrit.memory import CentralMemory
+from pyrit.memory import CentralMemory, SQLiteMemory
 from pyrit.memory.memory_interface import MemoryInterface
 from pyrit.score import LDAPInjectionOutputScorer
 
@@ -57,12 +57,36 @@ async def test_ldap_injection_detected(text: str, patch_central_database):
         r"user)\01",
         r"user)\07",
         r"user)\012",
+        r"user)\077",
     ],
 )
 async def test_ldap_injection_not_detected(text: str, patch_central_database):
     scorer = LDAPInjectionOutputScorer()
     score = (await scorer.score_text_async(text))[0]
     assert score.get_value() is False
+
+
+@pytest.mark.parametrize("suffix", ["active", "dead", "FACE", "greeting"])
+@pytest.mark.parametrize("null_marker", [r"\00", r"\x00", "%00", "\x00"])
+@pytest.mark.usefixtures("patch_central_database")
+async def test_ldap_injection_complete_null_escape_with_suffix_async(
+    *, null_marker: str, suffix: str, sqlite_instance: SQLiteMemory
+) -> None:
+    scorer = LDAPInjectionOutputScorer()
+    score = (await scorer.score_text_async(f"user){null_marker}{suffix}"))[0]
+
+    assert score.get_value() is True
+    assert score.score_category == ["security"]
+    assert score.score_rationale == "Matched: Null Byte Filter Termination"
+    assert score.score_metadata == {}
+
+    stored_scores = await sqlite_instance.get_scores_async(score_ids=[str(score.id)])
+    assert len(stored_scores) == 1
+    stored_score = stored_scores[0]
+    assert stored_score.get_value() is True
+    assert stored_score.score_category == score.score_category
+    assert stored_score.score_rationale == score.score_rationale
+    assert stored_score.score_metadata == score.score_metadata
 
 
 async def test_ldap_injection_long_plain_text_not_detected(patch_central_database):
