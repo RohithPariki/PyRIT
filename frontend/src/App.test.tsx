@@ -258,7 +258,7 @@ jest.mock("./components/Chat/ChatWindow", () => {
             originatingAttackId: routeRef.current.attackResultId,
             originatingConversationId: routeRef.current.convId,
             originatingPath: routeRef.current.path,
-            draft: { text: activeTextRef.current },
+            draft: { text: activeTextRef.current, attachments: [] },
           });
         }
       };
@@ -2146,9 +2146,9 @@ describe("App", () => {
     await user.click(screen.getByTestId("open-attack"));
 
     await waitFor(() =>
-      expect(screen.getByTestId("attack-result-id")).toHaveTextContent("none")
+      expect(screen.getByText("Loading attack")).toBeInTheDocument()
     );
-    expect(screen.getByTestId("active-target-name")).toHaveTextContent("none");
+    expect(screen.queryByTestId("chat-window")).not.toBeInTheDocument();
 
     resolveRevisitAttack(attack);
     await waitFor(() =>
