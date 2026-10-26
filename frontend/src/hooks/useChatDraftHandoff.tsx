@@ -1,5 +1,8 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 
+import type {
+  ChatDraftContent, ChatDraftContextState, ChatDraftHandoffContextValue, PendingImportPayload,
+} from '@/types'
 import { generateClientId } from '@/utils/clientId'
 import {
   canApplyPendingImport,
@@ -7,12 +10,7 @@ import {
   releaseSupersededUrls,
   revokeAttachmentUrls,
   shouldApplyPreservedDraft,
-  type ChatDraftContent,
-  type ChatDraftContextState,
-  type ChatDraftHandoffContextValue,
-  type PendingImportPayload,
 } from '@/utils/chatDraft'
-
 
 const ChatDraftHandoffContext = createContext<ChatDraftHandoffContextValue | null>(null)
 
@@ -21,79 +19,82 @@ export function ChatDraftProvider({ children }: { children: ReactNode }) {
   const [pendingImport, setPendingImport] = useState<PendingImportPayload | null>(null)
   const [activeSequence, setActiveSequence] = useState(0)
   const sequenceRef = useRef(0)
-  const preservedDraftRef = useRef(preservedDraft)
-  const pendingImportRef = useRef(pendingImport)
+  const preservedDraftRef = useRef<ChatDraftContextState | null>(null)
+  const pendingImportRef = useRef<PendingImportPayload | null>(null)
+  const mountedRef = useRef(true)
 
   useEffect(() => {
-    preservedDraftRef.current = preservedDraft
-  }, [preservedDraft])
-
-  useEffect(() => {
-    pendingImportRef.current = pendingImport
-  }, [pendingImport])
-
-  // Revoke any leftover blob URLs on unmount of provider
-  useEffect(() => {
+    mountedRef.current = true
     return () => {
-      if (preservedDraftRef.current?.draft?.attachments) {
-        revokeAttachmentUrls(preservedDraftRef.current.draft.attachments)
-      }
-      if (pendingImportRef.current?.content?.attachments) {
-        revokeAttachmentUrls(pendingImportRef.current.content.attachments)
-      }
+      mountedRef.current = false
+      revokeAttachmentUrls([
+        ...preservedDraftRef.current?.draft.attachments ?? [],
+        ...pendingImportRef.current?.content.attachments ?? [],
+      ])
+      preservedDraftRef.current = null
+      pendingImportRef.current = null
     }
+  }, [])
+
+  const advanceSequence = useCallback((): number => {
+    sequenceRef.current += 1
+    setActiveSequence(sequenceRef.current)
+    return sequenceRef.current
   }, [])
 
   const preserveDraft = useCallback((state: Omit<ChatDraftContextState, 'savedAt' | 'sequence'>) => {
-    sequenceRef.current += 1
-    const nextSeq = sequenceRef.current
-    setActiveSequence(nextSeq)
-    const prevAttachments = preservedDraftRef.current?.draft?.attachments ?? []
-    releaseSupersededUrls(prevAttachments, state.draft?.attachments ?? [])
+    // Parent effects are cleaned up before the active composer's unmount.
+    if (!mountedRef.current) {
+      revokeAttachmentUrls(state.draft.attachments)
+      return
+    }
+    releaseSupersededUrls(preservedDraftRef.current?.draft.attachments, [
+      ...state.draft.attachments,
+      ...pendingImportRef.current?.content.attachments ?? [],
+    ])
     const nextState: ChatDraftContextState = {
       ...state,
       savedAt: Date.now(),
-      sequence: nextSeq,
+      sequence: advanceSequence(),
     }
     preservedDraftRef.current = nextState
     setPreservedDraft(nextState)
-  }, [])
+  }, [advanceSequence])
 
-  const clearPreservedDraft = useCallback(() => {
+  const clearPreservedDraft = useCallback((expectedSequence?: number) => {
     const current = preservedDraftRef.current
-    if (current?.draft?.attachments) {
-      // Do not revoke if pendingImport is holding the same attachment
-      const pendingUrls = new Set(pendingImportRef.current?.content?.attachments?.map((a) => a.url) ?? [])
-      for (const att of current.draft.attachments) {
-        if (att.url && att.url.startsWith('blob:') && !pendingUrls.has(att.url)) {
-          try {
-            URL.revokeObjectURL(att.url)
-          } catch {
-            // ignore
-          }
-        }
-      }
-    }
+    if (expectedSequence !== undefined && current?.sequence !== expectedSequence) return
+    releaseSupersededUrls(current?.draft.attachments, pendingImportRef.current?.content.attachments)
     preservedDraftRef.current = null
     setPreservedDraft(null)
-  }, [])
+    advanceSequence()
+  }, [advanceSequence])
 
-  const stagePendingImport = useCallback((payload: Omit<PendingImportPayload, 'id' | 'sequence' | 'stagedAt'>): PendingImportPayload => {
-    sequenceRef.current += 1
-    const nextSeq = sequenceRef.current
-    setActiveSequence(nextSeq)
-    const prevImportAttachments = pendingImportRef.current?.content?.attachments ?? []
-    releaseSupersededUrls(prevImportAttachments, payload.content?.attachments ?? [])
+  const stagePendingImport = useCallback((
+    payload: Omit<PendingImportPayload, 'id' | 'sequence' | 'stagedAt'>,
+    expectedSequence?: number,
+  ): PendingImportPayload | null => {
+    if (!mountedRef.current || (expectedSequence !== undefined && expectedSequence !== sequenceRef.current)) {
+      releaseSupersededUrls(payload.content.attachments, [
+        ...preservedDraftRef.current?.draft.attachments ?? [],
+        ...pendingImportRef.current?.content.attachments ?? [],
+      ])
+      return null
+    }
+    releaseSupersededUrls(pendingImportRef.current?.content.attachments, [
+      ...payload.content.attachments ?? [],
+      ...preservedDraftRef.current?.draft.attachments ?? [],
+    ])
     const staged: PendingImportPayload = {
       ...payload,
       id: generateClientId(),
-      sequence: nextSeq,
+      sequence: advanceSequence(),
       stagedAt: Date.now(),
     }
     pendingImportRef.current = staged
     setPendingImport(staged)
     return staged
-  }, [])
+  }, [advanceSequence])
 
   const consumePendingImport = useCallback((
     id?: string,
@@ -105,13 +106,13 @@ export function ChatDraftProvider({ children }: { children: ReactNode }) {
     if (id && current.id !== id) return null
     // Guard against stale asynchronous completion
     if (current.sequence < sequenceRef.current) {
-      revokeAttachmentUrls(current.content?.attachments)
+      releaseSupersededUrls(current.content.attachments, preservedDraftRef.current?.draft.attachments)
       setPendingImport(null)
       pendingImportRef.current = null
       return null
     }
     // Verify destination matches
-    if (id && !canApplyPendingImport(current, currentAttackId, currentConversationId)) {
+    if (!canApplyPendingImport(current, currentAttackId, currentConversationId)) {
       return null
     }
     // Consumed: clear pending import so it cannot be applied twice
@@ -122,27 +123,21 @@ export function ChatDraftProvider({ children }: { children: ReactNode }) {
 
   const dismissPendingImport = useCallback((id?: string) => {
     const current = pendingImportRef.current
-    if (!current || (id && current.id !== id)) return
-    const preservedUrls = new Set(preservedDraftRef.current?.draft?.attachments?.map((a) => a.url) ?? [])
-    for (const att of current.content?.attachments ?? []) {
-      if (att.url && att.url.startsWith('blob:') && !preservedUrls.has(att.url)) {
-        try {
-          URL.revokeObjectURL(att.url)
-        } catch {
-          // ignore
-        }
-      }
-    }
+    if (id && current?.id !== id) return
+    releaseSupersededUrls(current?.content.attachments, preservedDraftRef.current?.draft.attachments)
     pendingImportRef.current = null
     setPendingImport(null)
-  }, [])
+    advanceSequence()
+  }, [advanceSequence])
 
   const consumePreservedDraft = useCallback((
     currentAttackId: string | null,
     currentConversationId: string | null = null,
+    expectedSequence?: number,
   ): ChatDraftContent | null => {
     const current = preservedDraftRef.current
     if (!current) return null
+    if (expectedSequence !== undefined && current.sequence !== expectedSequence) return null
     if (!shouldApplyPreservedDraft(current, currentAttackId, currentConversationId)) {
       return null
     }
@@ -188,7 +183,7 @@ const DEFAULT_CHAT_DRAFT_HANDOFF: ChatDraftHandoffContextValue = {
   activeSequence: 0,
   preserveDraft: () => {},
   clearPreservedDraft: () => {},
-  stagePendingImport: (payload) => ({ ...payload, id: 'fallback-id', sequence: 0, stagedAt: Date.now() }),
+  stagePendingImport: () => { throw new Error('Chat imports require a ChatDraftProvider.') },
   consumePendingImport: () => null,
   dismissPendingImport: () => {},
   consumePreservedDraft: () => null,

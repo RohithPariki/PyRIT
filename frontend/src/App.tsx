@@ -222,6 +222,7 @@ function AppContent({ operatorAlias }: { operatorAlias: string | null }) {
   const { preferences, updatePreferences, error: preferenceError } = useUserPreferences()
   const targetDefaults = useTargetPreferences(registry.targets)
   const draftHandoff = useChatDraftHandoff()
+  const { clearPreservedDraft, dismissPendingImport } = draftHandoff
   const [draftSession, setDraftSession] = useState<{
     pathname: string
     key: number
@@ -365,9 +366,10 @@ function AppContent({ operatorAlias }: { operatorAlias: string | null }) {
       }
     }
     if (!isDatasetsPath(location.pathname) && !isChatPath(location.pathname)) {
-      draftHandoff.clearPreservedDraft()
+      clearPreservedDraft()
+      dismissPendingImport()
     }
-  }, [location.pathname, location.search, location.hash, location.state, draftHandoff])
+  }, [location.pathname, location.search, location.hash, location.state, clearPreservedDraft, dismissPendingImport])
 
   const handleFiltersChange = useCallback((filters: HistoryFilters) => {
     // The label search is controlled by this URL state and must not lag behind typing.
@@ -620,7 +622,8 @@ function AppContent({ operatorAlias }: { operatorAlias: string | null }) {
   }, [navigate, draftHandoff.preservedDraft])
 
   const handleNewAttack = useCallback(() => {
-    draftHandoff.clearPreservedDraft()
+    clearPreservedDraft()
+    dismissPendingImport()
     lastChatLocation.current = { path: VIEW_PATHS.chat, state: null }
     setDraftSession((current) => ({
       ...current,
@@ -628,7 +631,7 @@ function AppContent({ operatorAlias }: { operatorAlias: string | null }) {
       target: targetDefaults.preferences.objective,
     }))
     navigate(VIEW_PATHS.chat)
-  }, [navigate, draftHandoff, targetDefaults.preferences.objective])
+  }, [navigate, clearPreservedDraft, dismissPendingImport, targetDefaults.preferences.objective])
 
   const handleConversationCreated = useCallback((
     arId: string,
@@ -736,15 +739,18 @@ function AppContent({ operatorAlias }: { operatorAlias: string | null }) {
       attackId={routeAttackId ?? ''}
       variant={isAttackError ? 'error' : 'not-found'}
       findingEvidenceId={findingEvidenceId}
-      onStartNew={() => navigate(VIEW_PATHS.chat)}
+      onStartNew={handleNewAttack}
       onBackToHistory={() => navigate(VIEW_PATHS.history)}
     />
+  ) : routeAttackId !== null && !readyAttack ? (
+    <Spinner label="Loading attack" />
   ) : (
     <ChatWindow
       key={draftSession.key}
       toolbarContainer={chatToolbarContainer}
       onNewAttack={handleNewAttack}
       activeTarget={activeTarget}
+      draftTargetReference={routeAttackId === null ? draftSession.target : undefined}
       availableTargets={registry.targets}
       targetsLoading={registry.loading}
       targetsError={registry.error}

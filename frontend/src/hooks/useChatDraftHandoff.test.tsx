@@ -8,6 +8,7 @@ import type { ReactNode } from 'react'
 
 import {
   canApplyPendingImport,
+  hasChatDraftState,
   isChatDraftDirty,
   releaseSupersededUrls,
   revokeAttachmentUrls,
@@ -15,9 +16,23 @@ import {
   type ChatDraftContent,
   type PendingImportPayload,
 } from '@/utils/chatDraft'
-import type { MessageAttachment } from '@/types'
+import type { ChatConverterSnapshot, MessageAttachment } from '@/types'
 
 import { ChatDraftProvider, useChatDraftHandoff } from './useChatDraftHandoff'
+
+const CONVERTERS: ChatConverterSnapshot = {
+  generation: 'test',
+  workingInputs: {},
+  pipelines: { text: [{ id: 'rot13-stage', converterId: 'rot13' }] },
+  stageResults: {},
+  errors: {},
+  applied: {
+    text: {
+      pieceId: 'text', pieceType: 'text', originalValue: 'Hello from draft',
+      convertedValue: 'Uryyb sebz qensg', convertedDataType: 'text', converterInstanceIds: ['rot13'],
+    },
+  },
+}
 
 describe('useChatDraftHandoff and chatDraft utilities', () => {
   let revokeObjectURLSpy: jest.SpyInstance
@@ -41,6 +56,7 @@ describe('useChatDraftHandoff and chatDraft utilities', () => {
           attachments: [],
           systemPrompt: '',
           converters: {
+            ...CONVERTERS,
             applied: {},
             pipelines: {},
           },
@@ -55,7 +71,8 @@ describe('useChatDraftHandoff and chatDraft utilities', () => {
     it('returns true when media attachments are present even with empty text', () => {
       const attachment: MessageAttachment = {
         name: 'image.png',
-        type: 'image/png',
+        type: 'image',
+        mimeType: 'image/png',
         url: 'blob:http://localhost/test-blob',
         size: 1024,
       }
@@ -70,14 +87,22 @@ describe('useChatDraftHandoff and chatDraft utilities', () => {
       expect(
         isChatDraftDirty({
           text: '',
-          converters: {
-            applied: {
-              'piece-1': [{ id: 'rot13', name: 'ROT13', convertedPrompt: 'test' }],
-            },
-          },
+          converters: CONVERTERS,
         }),
       ).toBe(true)
     })
+  })
+
+  it('preserves target and unapplied setup without marking prompt content dirty', () => {
+    const converterSetup = { ...CONVERTERS, applied: {} }
+    for (const setup of [
+      { target: null },
+      { target: { registryName: 'selected-target', identifierHash: 'selected-hash' } },
+      { converters: converterSetup },
+    ]) {
+      expect(hasChatDraftState({ text: '', attachments: [], ...setup })).toBe(true)
+      expect(isChatDraftDirty({ text: '', attachments: [], ...setup })).toBe(false)
+    }
   })
 
   describe('shouldApplyPreservedDraft', () => {
@@ -89,7 +114,7 @@ describe('useChatDraftHandoff and chatDraft utilities', () => {
         originatingAttackId: null,
         originatingConversationId: null,
         originatingPath: '/chat',
-        draft: { text: '   ' },
+        draft: { text: '   ', attachments: [] },
         savedAt: Date.now(),
         sequence: 1,
       }
@@ -101,7 +126,7 @@ describe('useChatDraftHandoff and chatDraft utilities', () => {
         originatingAttackId: null,
         originatingConversationId: null,
         originatingPath: '/chat',
-        draft: { text: 'draft prompt' },
+        draft: { text: 'draft prompt', attachments: [] },
         savedAt: Date.now(),
         sequence: 1,
       }
@@ -113,11 +138,13 @@ describe('useChatDraftHandoff and chatDraft utilities', () => {
         originatingAttackId: 'attack-456',
         originatingConversationId: 'conv-456',
         originatingPath: '/attacks/attack-456',
-        draft: { text: 'draft for attack 456' },
+        draft: { text: 'draft for attack 456', attachments: [] },
         savedAt: Date.now(),
         sequence: 1,
       }
-      expect(shouldApplyPreservedDraft(persistedDraft, 'attack-456')).toBe(true)
+      expect(shouldApplyPreservedDraft(persistedDraft, 'attack-456')).toBe(false)
+      expect(shouldApplyPreservedDraft(persistedDraft, 'attack-456', 'conv-456')).toBe(true)
+      expect(shouldApplyPreservedDraft(persistedDraft, 'attack-456', 'other-conversation')).toBe(false)
     })
 
     it('returns false when active conversation does not match draft destination (prevents draft leak)', () => {
@@ -125,7 +152,7 @@ describe('useChatDraftHandoff and chatDraft utilities', () => {
         originatingAttackId: 'attack-1',
         originatingConversationId: 'conv-1',
         originatingPath: '/attacks/attack-1',
-        draft: { text: 'attack 1 prompt' },
+        draft: { text: 'attack 1 prompt', attachments: [] },
         savedAt: Date.now(),
         sequence: 1,
       }
@@ -136,7 +163,7 @@ describe('useChatDraftHandoff and chatDraft utilities', () => {
         originatingAttackId: null,
         originatingConversationId: null,
         originatingPath: '/chat',
-        draft: { text: 'unsaved draft' },
+        draft: { text: 'unsaved draft', attachments: [] },
         savedAt: Date.now(),
         sequence: 1,
       }
@@ -146,7 +173,7 @@ describe('useChatDraftHandoff and chatDraft utilities', () => {
 
   describe('canApplyPendingImport', () => {
     it('returns false when pending import is null', () => {
-      expect(canApplyPendingImport(null as unknown as PendingImportPayload, null)).toBe(false)
+      expect(canApplyPendingImport(null, null)).toBe(false)
     })
 
     it('validates destination: new_attack only applies to unsaved chat (null)', () => {
@@ -168,9 +195,12 @@ describe('useChatDraftHandoff and chatDraft utilities', () => {
         stagedAt: Date.now(),
         destinationType: 'current_conversation',
         targetAttackId: 'target-attack-789',
+        targetConversationId: 'target-conversation-789',
         content: { text: 'imported prompt' },
       }
-      expect(canApplyPendingImport(importPayload, 'target-attack-789')).toBe(true)
+      expect(canApplyPendingImport(importPayload, 'target-attack-789', 'target-conversation-789')).toBe(true)
+      expect(canApplyPendingImport(importPayload, 'target-attack-789')).toBe(false)
+      expect(canApplyPendingImport(importPayload, 'target-attack-789', 'other-conversation')).toBe(false)
       expect(canApplyPendingImport(importPayload, 'other-attack')).toBe(false)
       expect(canApplyPendingImport(importPayload, null)).toBe(false)
     })
@@ -191,10 +221,10 @@ describe('useChatDraftHandoff and chatDraft utilities', () => {
   describe('revokeAttachmentUrls and releaseSupersededUrls', () => {
     it('revokes only blob: URLs and ignores other URL types', () => {
       const attachments: MessageAttachment[] = [
-        { name: 'blob.png', type: 'image/png', url: 'blob:http://localhost/test-1', size: 100 },
-        { name: 'blob2.png', type: 'image/png', url: 'blob:http://localhost/test-2', size: 100 },
-        { name: 'data.png', type: 'image/png', url: 'data:image/png;base64,abc', size: 100 },
-        { name: 'remote.png', type: 'image/png', url: '/api/media?path=test.png', size: 100 },
+        { name: 'blob.png', type: 'image', mimeType: 'image/png', url: 'blob:http://localhost/test-1', size: 100 },
+        { name: 'blob2.png', type: 'image', mimeType: 'image/png', url: 'blob:http://localhost/test-2', size: 100 },
+        { name: 'data.png', type: 'image', mimeType: 'image/png', url: 'data:image/png;base64,abc', size: 100 },
+        { name: 'remote.png', type: 'image', mimeType: 'image/png', url: '/api/media?path=test.png', size: 100 },
       ]
 
       revokeAttachmentUrls(attachments)
@@ -205,12 +235,12 @@ describe('useChatDraftHandoff and chatDraft utilities', () => {
 
     it('releases only superseded blob URLs that are absent from next attachments', () => {
       const oldAttachments: MessageAttachment[] = [
-        { name: 'kept.png', type: 'image/png', url: 'blob:http://localhost/kept', size: 100 },
-        { name: 'removed.png', type: 'image/png', url: 'blob:http://localhost/removed', size: 100 },
+        { name: 'kept.png', type: 'image', mimeType: 'image/png', url: 'blob:http://localhost/kept', size: 100 },
+        { name: 'removed.png', type: 'image', mimeType: 'image/png', url: 'blob:http://localhost/removed', size: 100 },
       ]
       const newAttachments: MessageAttachment[] = [
-        { name: 'kept.png', type: 'image/png', url: 'blob:http://localhost/kept', size: 100 },
-        { name: 'added.png', type: 'image/png', url: 'blob:http://localhost/added', size: 100 },
+        { name: 'kept.png', type: 'image', mimeType: 'image/png', url: 'blob:http://localhost/kept', size: 100 },
+        { name: 'added.png', type: 'image', mimeType: 'image/png', url: 'blob:http://localhost/added', size: 100 },
       ]
 
       releaseSupersededUrls(oldAttachments, newAttachments)
@@ -232,6 +262,9 @@ describe('useChatDraftHandoff and chatDraft utilities', () => {
       expect(result.current.consumePendingImport()).toBeNull()
       expect(result.current.consumePreservedDraft(null)).toBeNull()
       expect(result.current.isDraftDirty({ text: 'text' })).toBe(true)
+      expect(() => result.current.stagePendingImport({
+        destinationType: 'new_attack', content: { text: 'Cannot stage without an owner' },
+      })).toThrow('Chat imports require a ChatDraftProvider.')
     })
 
     it('preserves draft across round trip and returns complete draft content', () => {
@@ -241,13 +274,9 @@ describe('useChatDraftHandoff and chatDraft utilities', () => {
         text: 'Hello from draft',
         systemPrompt: 'Adversarial system prompt',
         attachments: [
-          { name: 'sample.png', type: 'image/png', url: 'blob:http://localhost/img1', size: 500 },
+          { name: 'sample.png', type: 'image', mimeType: 'image/png', url: 'blob:http://localhost/img1', size: 500 },
         ],
-        converters: {
-          applied: {
-            p1: [{ id: 'c1', name: 'Rot13', convertedPrompt: 'Uryyb' }],
-          },
-        },
+        converters: CONVERTERS,
       }
 
       act(() => {
@@ -263,7 +292,7 @@ describe('useChatDraftHandoff and chatDraft utilities', () => {
       expect(result.current.preservedDraft?.draft.text).toBe('Hello from draft')
       expect(result.current.preservedDraft?.draft.systemPrompt).toBe('Adversarial system prompt')
       expect(result.current.preservedDraft?.draft.attachments).toHaveLength(1)
-      expect(result.current.preservedDraft?.draft.converters?.applied?.p1).toHaveLength(1)
+      expect(result.current.preservedDraft?.draft.converters).toEqual(CONVERTERS)
 
       // Consume preserved draft once
       let consumed: ChatDraftContent | null = null
@@ -272,7 +301,7 @@ describe('useChatDraftHandoff and chatDraft utilities', () => {
       })
       expect(consumed).not.toBeNull()
       expect(consumed?.text).toBe('Hello from draft')
-      expect(consumed?.converters?.applied?.p1?.[0].name).toBe('Rot13')
+      expect(consumed?.converters?.applied.text.convertedValue).toBe('Uryyb sebz qensg')
 
       // Second consumption returns null (single-use guarantee prevents duplicate restores)
       act(() => {
@@ -290,7 +319,7 @@ describe('useChatDraftHandoff and chatDraft utilities', () => {
           originatingAttackId: 'attack-100',
           originatingConversationId: 'conv-100',
           originatingPath: '/attacks/attack-100',
-          draft: { text: 'Attack 100 draft' },
+          draft: { text: 'Attack 100 draft', attachments: [] },
         })
       })
 
@@ -312,7 +341,7 @@ describe('useChatDraftHandoff and chatDraft utilities', () => {
       // When correct attack ID is requested, draft is successfully consumed
       let rightContextDraft: ChatDraftContent | null = null
       act(() => {
-        rightContextDraft = result.current.consumePreservedDraft('attack-100')
+        rightContextDraft = result.current.consumePreservedDraft('attack-100', 'conv-100')
       })
       expect(rightContextDraft?.text).toBe('Attack 100 draft')
       expect(result.current.preservedDraft).toBeNull()
@@ -326,7 +355,7 @@ describe('useChatDraftHandoff and chatDraft utilities', () => {
           originatingAttackId: null,
           originatingConversationId: null,
           originatingPath: '/chat',
-          draft: { text: 'my draft text' },
+          draft: { text: 'my draft text', attachments: [] },
         })
       })
       expect(result.current.preservedDraft?.draft.text).toBe('my draft text')
@@ -358,7 +387,7 @@ describe('useChatDraftHandoff and chatDraft utilities', () => {
           draft: {
             text: 'v1',
             attachments: [
-              { name: 'old.png', type: 'image/png', url: 'blob:http://localhost/old', size: 100 },
+              { name: 'old.png', type: 'image', mimeType: 'image/png', url: 'blob:http://localhost/old', size: 100 },
             ],
           },
         })
@@ -373,7 +402,7 @@ describe('useChatDraftHandoff and chatDraft utilities', () => {
           draft: {
             text: 'v2',
             attachments: [
-              { name: 'new.png', type: 'image/png', url: 'blob:http://localhost/new', size: 100 },
+              { name: 'new.png', type: 'image', mimeType: 'image/png', url: 'blob:http://localhost/new', size: 100 },
             ],
           },
         })
@@ -393,7 +422,7 @@ describe('useChatDraftHandoff and chatDraft utilities', () => {
           draft: {
             text: 'to be cleared',
             attachments: [
-              { name: 'blob1.png', type: 'image/png', url: 'blob:http://localhost/blob1', size: 100 },
+              { name: 'blob1.png', type: 'image', mimeType: 'image/png', url: 'blob:http://localhost/blob1', size: 100 },
             ],
           },
         })
@@ -416,7 +445,7 @@ describe('useChatDraftHandoff and chatDraft utilities', () => {
           content: {
             text: 'imported seed prompt',
             attachments: [
-              { name: 'imported.png', type: 'image/png', url: 'blob:http://localhost/imp-blob', size: 200 },
+              { name: 'imported.png', type: 'image', mimeType: 'image/png', url: 'blob:http://localhost/imp-blob', size: 200 },
             ],
           },
         })
@@ -445,10 +474,11 @@ describe('useChatDraftHandoff and chatDraft utilities', () => {
         result.current.stagePendingImport({
           destinationType: 'current_conversation',
           targetAttackId: 'attack-1',
+          targetConversationId: 'conv-1',
           content: {
             text: 'dismiss me',
             attachments: [
-              { name: 'dismissed.png', type: 'image/png', url: 'blob:http://localhost/dismiss-blob', size: 200 },
+              { name: 'dismissed.png', type: 'image', mimeType: 'image/png', url: 'blob:http://localhost/dismiss-blob', size: 200 },
             ],
           },
         })
@@ -471,7 +501,7 @@ describe('useChatDraftHandoff and chatDraft utilities', () => {
           draft: {
             text: 'unmount draft',
             attachments: [
-              { name: 'unmount-draft.png', type: 'image/png', url: 'blob:http://localhost/unmount-draft', size: 100 },
+              { name: 'unmount-draft.png', type: 'image', mimeType: 'image/png', url: 'blob:http://localhost/unmount-draft', size: 100 },
             ],
           },
         })
@@ -480,7 +510,7 @@ describe('useChatDraftHandoff and chatDraft utilities', () => {
           content: {
             text: 'unmount import',
             attachments: [
-              { name: 'unmount-imp.png', type: 'image/png', url: 'blob:http://localhost/unmount-imp', size: 100 },
+              { name: 'unmount-imp.png', type: 'image', mimeType: 'image/png', url: 'blob:http://localhost/unmount-imp', size: 100 },
             ],
           },
         })
@@ -489,6 +519,135 @@ describe('useChatDraftHandoff and chatDraft utilities', () => {
       unmount()
       expect(revokeObjectURLSpy).toHaveBeenCalledWith('blob:http://localhost/unmount-draft')
       expect(revokeObjectURLSpy).toHaveBeenCalledWith('blob:http://localhost/unmount-imp')
+    })
+
+    it('does not let a stale restoration consume a newer snapshot for the same destination', () => {
+      const { result } = renderHook(() => useChatDraftHandoff(), { wrapper })
+      act(() => {
+        result.current.preserveDraft({
+          originatingAttackId: null, originatingConversationId: null, originatingPath: '/chat',
+          draft: { text: 'Earlier draft', attachments: [] },
+        })
+      })
+      const sequence = result.current.preservedDraft?.sequence
+      act(() => {
+        result.current.preserveDraft({
+          originatingAttackId: null, originatingConversationId: null, originatingPath: '/chat',
+          draft: { text: 'Newer draft', attachments: [] },
+        })
+        expect(result.current.consumePreservedDraft(null, null, sequence)).toBeNull()
+        result.current.clearPreservedDraft(sequence)
+      })
+      expect(result.current.preservedDraft?.draft.text).toBe('Newer draft')
+    })
+
+    it.each(['current_conversation', 'new_conversation'] as const)(
+      'checks the complete %s destination even when no import ID is supplied',
+      (destinationType: 'current_conversation' | 'new_conversation') => {
+        const { result } = renderHook(() => useChatDraftHandoff(), { wrapper })
+        act(() => {
+          result.current.stagePendingImport({
+            destinationType, targetAttackId: 'attack', targetConversationId: 'destination',
+            content: { text: 'Only for the destination' },
+          })
+          expect(result.current.consumePendingImport(undefined, 'attack', null)).toBeNull()
+          expect(result.current.consumePendingImport(undefined, 'attack', 'other')).toBeNull()
+          expect(result.current.consumePendingImport(undefined, 'attack', 'destination')?.content.text)
+            .toBe('Only for the destination')
+        })
+        expect(result.current.pendingImport).toBeNull()
+      },
+    )
+
+    it('rejects an async import prepared before a newer draft or an explicit reset', () => {
+      const { result } = renderHook(() => useChatDraftHandoff(), { wrapper })
+      const sequence = result.current.activeSequence
+      const attachment: MessageAttachment = {
+        type: 'image', mimeType: 'image/png', name: 'stale.png', url: 'blob:stale-import',
+      }
+      act(() => {
+        result.current.preserveDraft({
+          originatingAttackId: null, originatingConversationId: null, originatingPath: '/chat',
+          draft: { text: 'Newer draft', attachments: [] },
+        })
+        expect(result.current.stagePendingImport({
+          destinationType: 'new_attack', content: { text: 'Stale result', attachments: [attachment] },
+        }, sequence)).toBeNull()
+      })
+      expect(result.current.pendingImport).toBeNull()
+      expect(result.current.preservedDraft?.draft.text).toBe('Newer draft')
+      expect(revokeObjectURLSpy).toHaveBeenCalledWith(attachment.url)
+      const beforeReset = result.current.activeSequence
+      act(() => {
+        result.current.clearPreservedDraft()
+        expect(result.current.stagePendingImport({
+          destinationType: 'new_attack', content: { text: 'Result after cancellation' },
+        }, beforeReset)).toBeNull()
+      })
+      expect(result.current.pendingImport).toBeNull()
+    })
+
+    it('keeps shared blob URLs alive when either preserved or pending content is replaced', () => {
+      const { result } = renderHook(() => useChatDraftHandoff(), { wrapper })
+      const attachment: MessageAttachment = {
+        type: 'image', mimeType: 'image/png', name: 'shared.png', url: 'blob:shared',
+      }
+      act(() => {
+        result.current.preserveDraft({
+          originatingAttackId: null, originatingConversationId: null, originatingPath: '/chat',
+          draft: { text: 'Preserved', attachments: [attachment] },
+        })
+        result.current.stagePendingImport({
+          destinationType: 'new_attack', content: { text: 'Pending', attachments: [attachment] },
+        })
+        result.current.stagePendingImport({
+          destinationType: 'new_attack', content: { text: 'Replacement' },
+        })
+      })
+      expect(revokeObjectURLSpy).not.toHaveBeenCalledWith(attachment.url)
+      act(() => { result.current.clearPreservedDraft() })
+      expect(revokeObjectURLSpy).toHaveBeenCalledWith(attachment.url)
+    })
+
+    it('does not revoke a pending import attachment when preserved content is cleared', () => {
+      const { result } = renderHook(() => useChatDraftHandoff(), { wrapper })
+      const attachment: MessageAttachment = {
+        type: 'image', mimeType: 'image/png', name: 'shared.png', url: 'blob:shared',
+      }
+      act(() => {
+        result.current.preserveDraft({
+          originatingAttackId: null, originatingConversationId: null, originatingPath: '/chat',
+          draft: { text: 'Preserved', attachments: [attachment] },
+        })
+        result.current.stagePendingImport({
+          destinationType: 'new_attack', content: { text: 'Pending', attachments: [attachment] },
+        })
+        result.current.clearPreservedDraft()
+      })
+      expect(revokeObjectURLSpy).not.toHaveBeenCalledWith(attachment.url)
+      act(() => { result.current.dismissPendingImport() })
+      expect(revokeObjectURLSpy).toHaveBeenCalledTimes(1)
+      expect(revokeObjectURLSpy).toHaveBeenCalledWith(attachment.url)
+    })
+
+    it('invalidates stale pending content without revoking a newer draft attachment', () => {
+      const { result } = renderHook(() => useChatDraftHandoff(), { wrapper })
+      const attachment: MessageAttachment = {
+        type: 'image', mimeType: 'image/png', name: 'shared.png', url: 'blob:new-owner',
+      }
+      act(() => {
+        result.current.stagePendingImport({
+          destinationType: 'new_attack', content: { text: 'Old import', attachments: [attachment] },
+        })
+        result.current.preserveDraft({
+          originatingAttackId: null, originatingConversationId: null, originatingPath: '/chat',
+          draft: { text: 'Newer draft', attachments: [attachment] },
+        })
+        expect(result.current.consumePendingImport()).toBeNull()
+      })
+      expect(result.current.pendingImport).toBeNull()
+      expect(result.current.preservedDraft?.draft.text).toBe('Newer draft')
+      expect(revokeObjectURLSpy).not.toHaveBeenCalledWith(attachment.url)
     })
   })
 })

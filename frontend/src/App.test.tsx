@@ -1404,17 +1404,13 @@ describe("App", () => {
     fireEvent.click(screen.getByTestId("nav-history"));
     fireEvent.click(screen.getByTestId("open-attack-2"));        // ar-attack-2
 
-    // BEFORE getAttack resolves: ChatWindow must NOT see the stale conv id
-    // alongside the new attack id. While attack B loads, its data is not yet
-    // ready, so both the attack id and conversation id are withheld — which
-    // gates ChatWindow's /messages fetch and prevents the cross-attack 400.
+    // The destination composer is not mounted until its attack identity is known.
     expect(screen.getByTestId("main-layout")).toHaveAttribute(
       "data-current-view",
       "chat"
     );
-    expect(screen.getByTestId("attack-result-id")).toHaveTextContent("none");
-    expect(screen.getByTestId("active-conversation-id")).toHaveTextContent("none");
-    expect(screen.getByTestId("conversation-id")).toHaveTextContent("none");
+    expect(screen.queryByTestId("chat-window")).not.toBeInTheDocument();
+    expect(screen.getByText("Loading attack")).toBeInTheDocument();
 
     // After getAttack resolves: the conv id belonging to attack B is committed.
     resolveGetAttack({

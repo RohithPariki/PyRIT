@@ -54,8 +54,8 @@ import { useChatDraftHandoff } from '@/hooks/useChatDraftHandoff'
 import {
   shouldApplyPreservedDraft,
   canApplyPendingImport,
+  hasChatDraftState,
   isChatDraftDirty,
-  type ChatDraftContent,
 } from '@/utils/chatDraft'
 import { targetReference } from '@/utils/targetIdentity'
 import type { PieceConversion } from './converterTypes'
@@ -91,6 +91,7 @@ import type {
   BackendScore,
   ChatSendOutcome,
   ChatConverterSnapshot,
+  ChatDraftContent,
   ConversationMessagesResponse,
   ConversationDraftPiece,
   ConverterPipelineStage,
@@ -105,6 +106,7 @@ import type {
   NewAttackContext,
   TargetInstance,
   TargetInfo,
+  TargetReference,
 } from '../../types'
 import { isTargetResolutionBlocking, targetInfoMatchesTarget } from '../../utils/targetIdentity'
 import { scenarioRunRoutePath } from '../../utils/routeParams'
@@ -281,6 +283,7 @@ interface ChatWindowProps {
   toolbarContainer?: HTMLElement | null
   onNewAttack: () => void
   activeTarget: TargetInstance | null
+  draftTargetReference?: TargetReference | null
   availableTargets: TargetInstance[]
   targetsLoading: boolean
   targetsError: string | null
@@ -344,6 +347,7 @@ export default function ChatWindow({
   toolbarContainer,
   onNewAttack,
   activeTarget,
+  draftTargetReference,
   availableTargets,
   targetsLoading,
   targetsError,
@@ -470,85 +474,20 @@ export default function ChatWindow({
     ) ? draftHandoff.preservedDraft.draft : null
   ), [draftHandoff.preservedDraft, attackResultId, viewedConversationId])
 
-  const [chatInputText, setChatInputText] = useState(() => matchingPreservedDraft?.text ?? '')
-  const [systemPrompt, setSystemPrompt] = useState(() => matchingPreservedDraft?.systemPrompt ?? '')
-  const [draftAttachments, setDraftAttachments] = useState<MessageAttachment[]>(() => matchingPreservedDraft?.attachments ?? [])
+  const [chatInputText, setChatInputText] = useState('')
+  const [systemPrompt, setSystemPrompt] = useState('')
+  const [draftAttachments, setDraftAttachments] = useState<MessageAttachment[]>([])
   const converters = useChatConverters(chatInputText, draftAttachments)
   const { applied: activePieceConversions, restore: restoreConversions } = converters
   const [undoableSend, setUndoableSend] = useState<UndoableSend | null>(null)
   const [isUndoingSend, setIsUndoingSend] = useState(false)
   const undoInFlight = useRef(false)
 
-  const handoffRestoredRef = useRef(false)
-  useEffect(() => {
-    if (handoffRestoredRef.current) return
-    if (matchingPreservedDraft) {
-      handoffRestoredRef.current = true
-      if (matchingPreservedDraft.converters) {
-        restoreConversions(
-          matchingPreservedDraft.text,
-          matchingPreservedDraft.attachments,
-          matchingPreservedDraft.converters.applied ?? {},
-          matchingPreservedDraft.converters.pipelines,
-        )
-      }
-      draftHandoff.consumePreservedDraft(attackResultId, viewedConversationId)
-    }
-  }, [matchingPreservedDraft, restoreConversions, draftHandoff, attackResultId, viewedConversationId])
-
-  const activeDraftRef = useRef<ChatDraftContent>({
-    text: chatInputText,
-    attachments: draftAttachments,
-    systemPrompt,
-    target: activeTarget ? targetReference(activeTarget) : null,
-    converters: { applied: activePieceConversions, pipelines: converters.pipelines },
-  })
-
-  useLayoutEffect(() => {
-    activeDraftRef.current = {
-      text: chatInputText,
-      attachments: draftAttachments,
-      systemPrompt,
-      target: activeTarget ? targetReference(activeTarget) : null,
-      converters: { applied: activePieceConversions, pipelines: converters.pipelines },
-    }
-  }, [chatInputText, draftAttachments, systemPrompt, activeTarget, activePieceConversions, converters.pipelines])
-
-  const preserveDraftRef = useRef(draftHandoff.preserveDraft)
-  useLayoutEffect(() => {
-    preserveDraftRef.current = draftHandoff.preserveDraft
-  })
-
-  const routeContextRef = useRef({
-    attackResultId,
-    viewedConversationId,
-    path: location.pathname + location.search + location.hash,
-    state: location.state,
-  })
-  useLayoutEffect(() => {
-    routeContextRef.current = {
-      attackResultId,
-      viewedConversationId,
-      path: location.pathname + location.search + location.hash,
-      state: location.state,
-    }
-  }, [attackResultId, viewedConversationId, location.pathname, location.search, location.hash, location.state])
-
-  useEffect(() => {
-    return () => {
-      const current = activeDraftRef.current
-      if (isChatDraftDirty(current)) {
-        const { attackResultId: attackId, viewedConversationId: convId, path, state } = routeContextRef.current
-        preserveDraftRef.current({
-          originatingAttackId: attackId,
-          originatingConversationId: convId,
-          originatingPath: path,
-          originatingState: state,
-          draft: current,
-        })
-      }
-    }
-  }, [])
+  const handoffRestoredRef = useRef<number | null>(null)
+  const ownsDraftRef = useRef(false)
+  const discardDraftOnUnmountRef = useRef(false)
+  const preserveOnUnmountRef = useRef<(() => void) | null>(null)
+  useEffect(() => () => { preserveOnUnmountRef.current?.() }, [])
   const [recoverableSends, setRecoverableSends] = useState<Record<string, RecoverableSendDraft>>({})
   const [isRecoveringProcessingError, setIsRecoveringProcessingError] = useState(false)
   const [recoveredDraftWarningConversationId, setRecoveredDraftWarningConversationId] = useState<string | null>(null)
@@ -744,6 +683,50 @@ export default function ChatWindow({
   )
   // Any failed invariant keeps all mutation controls and handlers read-only.
   const isMutationLocked = executionReadOnly || isOperatorLocked || isCrossTargetLocked || isTargetResolutionLocked || isEvidenceUnavailable
+  const isDraftDestinationReady = !isLoadingAttack && !isLoadingMessages && !awaitingConversationLoad
+    && conversationLoadIssue?.conversationId !== viewedConversationId
+    && !isMutationLocked && !editDraft && (attackResultId === null || viewedConversationId !== null)
+
+  const activeDraft: ChatDraftContent = {
+    text: chatInputText,
+    attachments: draftAttachments,
+    systemPrompt,
+    target: draftTargetReference !== undefined
+      ? draftTargetReference : activeTarget ? targetReference(activeTarget) : null,
+    converters: converters.snapshot(),
+  }
+  const isActiveDraftDirty = isChatDraftDirty(activeDraft)
+  useLayoutEffect(() => {
+    if (isDraftDestinationReady || isActiveDraftDirty) ownsDraftRef.current = true
+    const savedDraft = { ...activeDraft, textMetadata: inputBoxRef.current?.getTextMetadata() }
+    const isWaitingForRestore = matchingPreservedDraft !== null
+      && handoffRestoredRef.current !== draftHandoff.preservedDraft?.sequence
+      && !isActiveDraftDirty
+    const hasUnrelatedDraft = draftHandoff.preservedDraft !== null && matchingPreservedDraft === null
+    const hasEditedContent = isActiveDraftDirty
+      || Object.values(activeDraft.converters?.pipelines ?? {}).some((stages: ConverterPipelineStage[]) => stages.length > 0)
+    preserveOnUnmountRef.current = (): void => {
+      if (discardDraftOnUnmountRef.current || !ownsDraftRef.current || isWaitingForRestore
+        || !hasChatDraftState(activeDraft) || (hasUnrelatedDraft && !hasEditedContent)) return
+      draftHandoff.preserveDraft({
+        originatingAttackId: attackResultId,
+        originatingConversationId: viewedConversationId,
+        originatingPath: location.pathname + location.search + location.hash,
+        originatingState: location.state,
+        draft: savedDraft,
+      })
+    }
+  })
+
+  const restoreComposerDraft = useCallback((draft: ChatDraftContent): MessageAttachment[] => {
+    const attachments = draft.attachments.map(withDraftIdentity)
+    setChatInputText(draft.text)
+    setDraftAttachments(attachments)
+    if (draft.systemPrompt !== undefined) setSystemPrompt(draft.systemPrompt)
+    inputBoxRef.current?.restoreDraft(draft.text, attachments, draft.textMetadata)
+    return attachments
+  }, [])
+  const restoreConverterSnapshot = converters.restoreSnapshot
   const isScoreLocked = isOperatorLocked || Boolean(isLoadingAttack) || isLoadingMessages
     || awaitingConversationLoad || isEvidenceUnavailable
   const {
@@ -793,42 +776,69 @@ export default function ChatWindow({
   const isFindingActionDisabled = Boolean(editDraft !== null || !attackResultId || !activeConversationId
     || isEvidenceUnavailable || isLoadingAttack || isLoadingMessages || awaitingConversationLoad)
 
-  const [appliedImportId, setAppliedImportId] = useState<string | null>(null)
   const pending = draftHandoff.pendingImport
   const canApplyImportNow = Boolean(
     pending
-    && pending.id !== appliedImportId
-    && !isMutationLocked
-    && !isLoadingAttack
-    && !awaitingConversationLoad
+    && isDraftDestinationReady
+    && runtime.ready
+    && matchingPreservedDraft === null
     && canApplyPendingImport(pending, attackResultId, viewedConversationId)
     && pending.sequence >= draftHandoff.activeSequence
-    && (!isChatDraftDirty({ text: chatInputText, attachments: draftAttachments, systemPrompt, converters: { applied: activePieceConversions, pipelines: converters.pipelines } }) || pending.replaceDirty),
+    && (!isActiveDraftDirty || pending.replaceDirty),
   )
 
-  if (canApplyImportNow && pending) {
-    setAppliedImportId(pending.id)
-    setChatInputText(pending.content.text)
-    setDraftAttachments(pending.content.attachments ?? [])
-  }
-
   useEffect(() => {
-    if (!appliedImportId) return
-    const currentPending = draftHandoff.pendingImport
-    if (currentPending && currentPending.id === appliedImportId) {
-      const consumed = draftHandoff.consumePendingImport(currentPending.id, attackResultId, viewedConversationId)
-      if (consumed) {
-        inputBoxRef.current?.restoreDraft(
-          consumed.content.text,
-          consumed.content.attachments ?? [],
-          consumed.content.textMetadata,
-        )
-        if (consumed.focus) {
-          inputBoxRef.current?.focus()
-        }
+    if (pending && pending.sequence < draftHandoff.activeSequence) {
+      draftHandoff.dismissPendingImport(pending.id)
+      return
+    }
+    if (!runtime.ready || !isDraftDestinationReady || !inputBoxRef.current) return
+    const preserved = draftHandoff.preservedDraft
+    const restoringPreserved = Boolean(matchingPreservedDraft && preserved
+      && handoffRestoredRef.current !== preserved.sequence)
+    let draft: ChatDraftContent
+    let focus = false
+    if (restoringPreserved && preserved) {
+      if (isActiveDraftDirty) {
+        draftHandoff.clearPreservedDraft(preserved.sequence)
+        return
+      }
+      const consumed = draftHandoff.consumePreservedDraft(attackResultId, viewedConversationId, preserved.sequence)
+      if (!consumed) return
+      handoffRestoredRef.current = preserved.sequence
+      draft = { ...consumed, systemPrompt: consumed.systemPrompt ?? '' }
+    } else {
+      if (!canApplyImportNow || !pending) return
+      const consumed = draftHandoff.consumePendingImport(pending.id, attackResultId, viewedConversationId)
+      if (!consumed) return
+      converters.clearAll()
+      draft = {
+        text: consumed.content.text,
+        attachments: consumed.content.attachments ?? [],
+        textMetadata: consumed.content.textMetadata,
+      }
+      focus = consumed.focus === true
+    }
+    // Claiming a handoff synchronizes the imperative input and its parent-owned draft atomically.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    const attachments = restoreComposerDraft(draft)
+    if (restoringPreserved) {
+      if (draft.converters?.generation === runtime.generation) {
+        restoreConverterSnapshot(draft.converters, draft.text, attachments)
+      } else {
+        restoreConversions(draft.text, attachments, {}, Object.fromEntries(
+          Object.entries(draft.converters?.pipelines ?? {}).map(([pieceType, stages]: [string, ConverterPipelineStage[]]) => [
+            pieceType, stages.map((stage: ConverterPipelineStage) => ({ id: stage.id, converterId: stage.converterId })),
+          ]),
+        ))
       }
     }
-  }, [appliedImportId, draftHandoff, attackResultId, viewedConversationId])
+    if (focus) inputBoxRef.current.focus()
+  }, [
+    canApplyImportNow, pending, draftHandoff, attackResultId, viewedConversationId, converters,
+    isDraftDestinationReady, matchingPreservedDraft, isActiveDraftDirty, runtime.ready, runtime.generation,
+    restoreComposerDraft, restoreConverterSnapshot, restoreConversions,
+  ])
 
   // Handle conversation selection from the panel
   // For a different ID the useEffect handles loading; for same ID force a refresh
@@ -2169,6 +2179,7 @@ export default function ChatWindow({
             onClick={() => {
               if (editDraft !== null) editorRef.current?.saveToNewAttack()
               else {
+                discardDraftOnUnmountRef.current = true
                 navigationRevisionRef.current += 1
                 setIsPanelOpen(false)
                 onNewAttack()
@@ -2313,7 +2324,7 @@ export default function ChatWindow({
         {editDraft === null && conversationLoadIssue?.conversationId === viewedConversationId && (
           <MessageBar intent={conversationLoadIssue.unavailable ? 'warning' : 'error'}>
             <MessageBarBody>{conversationLoadIssue.detail}{' '}
-              {!conversationLoadIssue.unavailable && attackResultId && viewedConversationId && (
+              {(!conversationLoadIssue.unavailable || !findingEvidenceId) && attackResultId && viewedConversationId && (
                 <Button onClick={() => { void loadConversation(attackResultId, viewedConversationId) }}>
                   Retry conversation load
                 </Button>
@@ -2387,7 +2398,6 @@ export default function ChatWindow({
           } : undefined}
           initialText={chatInputText}
           initialAttachments={draftAttachments}
-          initialTextMetadata={matchingPreservedDraft?.textMetadata}
           onSend={handleSend}
           sendDisabled={sendDisabledReasons.length > 0}
           sendDisabledReasons={sendDisabledReasons}
