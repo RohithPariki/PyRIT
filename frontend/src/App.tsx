@@ -742,8 +742,6 @@ function AppContent({ operatorAlias }: { operatorAlias: string | null }) {
       onStartNew={handleNewAttack}
       onBackToHistory={() => navigate(VIEW_PATHS.history)}
     />
-  ) : routeAttackId !== null && !readyAttack ? (
-    <Spinner label="Loading attack" />
   ) : (
     <ChatWindow
       key={draftSession.key}
@@ -751,6 +749,10 @@ function AppContent({ operatorAlias }: { operatorAlias: string | null }) {
       onNewAttack={handleNewAttack}
       activeTarget={activeTarget}
       draftTargetReference={routeAttackId === null ? draftSession.target : undefined}
+      draftContext={{
+        originatingAttackId: routeAttackId,
+        originatingConversationId: activeConversationId ?? routeConversationId,
+      }}
       availableTargets={registry.targets}
       targetsLoading={registry.loading}
       targetsError={registry.error}

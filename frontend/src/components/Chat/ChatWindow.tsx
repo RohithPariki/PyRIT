@@ -92,6 +92,7 @@ import type {
   ChatSendOutcome,
   ChatConverterSnapshot,
   ChatDraftContent,
+  ChatDraftContextState,
   ConversationMessagesResponse,
   ConversationDraftPiece,
   ConverterPipelineStage,
@@ -284,6 +285,8 @@ interface ChatWindowProps {
   onNewAttack: () => void
   activeTarget: TargetInstance | null
   draftTargetReference?: TargetReference | null
+  /** Route identity is available before the attack's metadata has loaded. */
+  draftContext?: Pick<ChatDraftContextState, 'originatingAttackId' | 'originatingConversationId'>
   availableTargets: TargetInstance[]
   targetsLoading: boolean
   targetsError: string | null
@@ -348,6 +351,7 @@ export default function ChatWindow({
   onNewAttack,
   activeTarget,
   draftTargetReference,
+  draftContext,
   availableTargets,
   targetsLoading,
   targetsError,
@@ -465,14 +469,16 @@ export default function ChatWindow({
   const globalMarkdown = preferences.chatMarkdown
   const location = useLocation()
   const viewedConversationId = activeConversationId ?? conversationId
+  const draftAttackId = draftContext ? draftContext.originatingAttackId : attackResultId
+  const draftConversationId = draftContext ? draftContext.originatingConversationId : viewedConversationId
   const draftHandoff = useChatDraftHandoff()
   const matchingPreservedDraft = useMemo(() => (
     draftHandoff.preservedDraft && shouldApplyPreservedDraft(
       draftHandoff.preservedDraft,
-      attackResultId,
-      viewedConversationId,
+      draftAttackId,
+      draftConversationId,
     ) ? draftHandoff.preservedDraft.draft : null
-  ), [draftHandoff.preservedDraft, attackResultId, viewedConversationId])
+  ), [draftHandoff.preservedDraft, draftAttackId, draftConversationId])
 
   const [chatInputText, setChatInputText] = useState('')
   const [systemPrompt, setSystemPrompt] = useState('')
@@ -683,7 +689,7 @@ export default function ChatWindow({
   )
   // Any failed invariant keeps all mutation controls and handlers read-only.
   const isMutationLocked = executionReadOnly || isOperatorLocked || isCrossTargetLocked || isTargetResolutionLocked || isEvidenceUnavailable
-  const isDraftDestinationReady = !isLoadingAttack && !isLoadingMessages && !awaitingConversationLoad
+  const isDraftDestinationReady = !isLoadingAttack && !isLoadingMessages && !awaitingConversationLoad && !isSending
     && conversationLoadIssue?.conversationId !== viewedConversationId
     && !isMutationLocked && !editDraft && (attackResultId === null || viewedConversationId !== null)
 
@@ -709,8 +715,8 @@ export default function ChatWindow({
       if (discardDraftOnUnmountRef.current || !ownsDraftRef.current || isWaitingForRestore
         || !hasChatDraftState(activeDraft) || (hasUnrelatedDraft && !hasEditedContent)) return
       draftHandoff.preserveDraft({
-        originatingAttackId: attackResultId,
-        originatingConversationId: viewedConversationId,
+        originatingAttackId: draftAttackId,
+        originatingConversationId: draftConversationId,
         originatingPath: location.pathname + location.search + location.hash,
         originatingState: location.state,
         draft: savedDraft,
@@ -782,7 +788,7 @@ export default function ChatWindow({
     && isDraftDestinationReady
     && runtime.ready
     && matchingPreservedDraft === null
-    && canApplyPendingImport(pending, attackResultId, viewedConversationId)
+    && canApplyPendingImport(pending, draftAttackId, draftConversationId)
     && pending.sequence >= draftHandoff.activeSequence
     && (!isActiveDraftDirty || pending.replaceDirty),
   )
@@ -803,13 +809,13 @@ export default function ChatWindow({
         draftHandoff.clearPreservedDraft(preserved.sequence)
         return
       }
-      const consumed = draftHandoff.consumePreservedDraft(attackResultId, viewedConversationId, preserved.sequence)
+      const consumed = draftHandoff.consumePreservedDraft(draftAttackId, draftConversationId, preserved.sequence)
       if (!consumed) return
       handoffRestoredRef.current = preserved.sequence
       draft = { ...consumed, systemPrompt: consumed.systemPrompt ?? '' }
     } else {
       if (!canApplyImportNow || !pending) return
-      const consumed = draftHandoff.consumePendingImport(pending.id, attackResultId, viewedConversationId)
+      const consumed = draftHandoff.consumePendingImport(pending.id, draftAttackId, draftConversationId)
       if (!consumed) return
       converters.clearAll()
       draft = {
@@ -835,7 +841,7 @@ export default function ChatWindow({
     }
     if (focus) inputBoxRef.current.focus()
   }, [
-    canApplyImportNow, pending, draftHandoff, attackResultId, viewedConversationId, converters,
+    canApplyImportNow, pending, draftHandoff, draftAttackId, draftConversationId, converters,
     isDraftDestinationReady, matchingPreservedDraft, isActiveDraftDirty, runtime.ready, runtime.generation,
     restoreComposerDraft, restoreConverterSnapshot, restoreConversions,
   ])

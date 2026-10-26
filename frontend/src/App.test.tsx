@@ -186,6 +186,7 @@ jest.mock("./components/Chat/ChatWindow", () => {
   const MockChatWindow = ({
     onNewAttack,
     activeTarget,
+    draftContext,
     attackResultId,
     conversationId,
     activeConversationId,
@@ -202,6 +203,7 @@ jest.mock("./components/Chat/ChatWindow", () => {
   }: {
     onNewAttack: () => void;
     activeTarget: unknown;
+    draftContext?: Pick<import("./types").ChatDraftContextState, "originatingAttackId" | "originatingConversationId">;
     attackResultId: string | null;
     conversationId: string | null;
     activeConversationId: string | null;
@@ -269,6 +271,8 @@ jest.mock("./components/Chat/ChatWindow", () => {
     }
     return (
       <div data-testid="chat-window">
+        <span data-testid="draft-attack-id">{draftContext?.originatingAttackId ?? "none"}</span>
+        <span data-testid="draft-conversation-id">{draftContext?.originatingConversationId ?? "none"}</span>
         <span data-testid="preserved-draft-text">{composerText}</span>
         <button
           onClick={() => setComposerText("preserved prompt draft")}
@@ -1404,13 +1408,15 @@ describe("App", () => {
     fireEvent.click(screen.getByTestId("nav-history"));
     fireEvent.click(screen.getByTestId("open-attack-2"));        // ar-attack-2
 
-    // The destination composer is not mounted until its attack identity is known.
+    // The loading shell must not use attack A's active conversation.
     expect(screen.getByTestId("main-layout")).toHaveAttribute(
       "data-current-view",
       "chat"
     );
-    expect(screen.queryByTestId("chat-window")).not.toBeInTheDocument();
-    expect(screen.getByText("Loading attack")).toBeInTheDocument();
+    expect(screen.getByTestId("attack-result-id")).toHaveTextContent("none");
+    expect(screen.getByTestId("active-conversation-id")).toHaveTextContent("none");
+    expect(screen.getByTestId("draft-attack-id")).toHaveTextContent("ar-attack-2");
+    expect(screen.getByTestId("draft-conversation-id")).toHaveTextContent("none");
 
     // After getAttack resolves: the conv id belonging to attack B is committed.
     resolveGetAttack({
@@ -1422,6 +1428,7 @@ describe("App", () => {
       expect(screen.getByTestId("active-conversation-id")).toHaveTextContent("attack-conv-2")
     );
     expect(screen.getByTestId("conversation-id")).toHaveTextContent("attack-conv-2");
+    expect(screen.getByTestId("draft-conversation-id")).toHaveTextContent("attack-conv-2");
   });
 
   it("merges default labels from backend version API", async () => {
@@ -2146,9 +2153,9 @@ describe("App", () => {
     await user.click(screen.getByTestId("open-attack"));
 
     await waitFor(() =>
-      expect(screen.getByText("Loading attack")).toBeInTheDocument()
+      expect(screen.getByTestId("attack-result-id")).toHaveTextContent("none")
     );
-    expect(screen.queryByTestId("chat-window")).not.toBeInTheDocument();
+    expect(screen.getByTestId("active-target-name")).toHaveTextContent("none");
 
     resolveRevisitAttack(attack);
     await waitFor(() =>

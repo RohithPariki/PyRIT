@@ -82,6 +82,7 @@ jest.mock('@/services/api', () => ({
   authApi: { getAccess: jest.fn().mockResolvedValue({ isAdmin: false }) },
   targetsApi: { listTargets: jest.fn(), getTarget: jest.fn() },
   attacksApi: {
+    createAttack: jest.fn(),
     getAttack: jest.fn(),
     getMessages: jest.fn(),
     getConversations: jest.fn(),
@@ -222,6 +223,68 @@ describe('App draft handoff with the real chat and composer', () => {
     expect(screen.getByPlaceholderText('Type prompt here')).toHaveValue('Saved attack draft')
     expect(screen.getByRole('button', { name: 'Remove draft.png' })).toBeInTheDocument()
     expect(URL.revokeObjectURL).not.toHaveBeenCalledWith(url)
+  })
+
+  it('should keep the historical conversation shell mounted while metadata loads', async () => {
+    const attackLoad = deferred<AttackSummary>()
+    jest.mocked(attacksApi.getAttack).mockReturnValueOnce(attackLoad.promise)
+    renderChat('/attacks/saved')
+    const toggle = await screen.findByTestId('toggle-panel-btn')
+    expect(toggle).toBeDisabled()
+    expect(screen.getByText('Loading conversation...', { exact: true })).toBeInTheDocument()
+    expect(screen.getByPlaceholderText('Type prompt here')).toBeDisabled()
+    await act(async () => { attackLoad.resolve(savedAttack()) })
+    await waitFor(() => expect(screen.getByPlaceholderText('Type prompt here')).toBeEnabled())
+    expect(screen.getByTestId('toggle-panel-btn')).toBe(toggle)
+  })
+
+  it('should retain a recovered failed prompt while branching to a new attack', async () => {
+    const originalValue = 'Restore this failed prompt'
+    const failedMessages: BackendMessage[] = [{
+      role: 'user', turn_number: 0, created_at: '',
+      message_pieces: [{
+        id: 'failed-prompt', original_value_data_type: 'text', original_value: originalValue,
+        converted_value_data_type: 'text', converted_value: originalValue, scores: [], response_error: 'none',
+      }],
+    }, {
+      role: 'assistant', turn_number: 1, created_at: '',
+      message_pieces: [{
+        id: 'failed-response', original_value_data_type: 'text', original_value: '',
+        converted_value_data_type: 'text', converted_value: '', scores: [], response_error: 'processing',
+        response_error_description: 'The target could not process this message.',
+      }],
+    }]
+    jest.mocked(attacksApi.createAttack).mockResolvedValue({
+      attack_result_id: 'recovered', conversation_id: 'recovered-main', created_at: '',
+    })
+    jest.mocked(attacksApi.getAttack).mockImplementation(async (id: string) => ({
+      ...savedAttack(id),
+      conversation_id: id === 'recovered' ? 'recovered-main' : 'main',
+      target_unbound: false,
+      target: {
+        target_type: TARGET.identifier.class_name,
+        target_registry_name: TARGET.target_registry_name,
+        identifier_hash: TARGET.identifier.hash,
+      },
+    }))
+    jest.mocked(attacksApi.getMessages).mockImplementation(async (id: string, conversationId: string) => ({
+      conversation_id: conversationId,
+      messages: id === 'saved' ? failedMessages : [],
+      target_response_status: id === 'saved'
+        ? { response_error: 'processing', request_turn_number: 0, response_turn_number: 1 } : null,
+    }))
+    const user = userEvent.setup()
+    renderChat('/attacks/saved/conversations/main')
+    await user.click(await screen.findByTestId('copy-to-input-btn-0'))
+    await user.click(await screen.findByRole('menuitem', { name: 'Branch attack', exact: true }))
+    await waitFor(() => expect(screen.getByLabelText('Current route')).toHaveTextContent(
+      '/attacks/recovered/conversations/recovered-main',
+    ))
+    await waitFor(() => expect(screen.getByPlaceholderText('Type prompt here')).toHaveValue(originalValue))
+    await visitDatasets(user)
+    await returnToChat(user)
+    await waitFor(() => expect(screen.getByPlaceholderText('Type prompt here')).toHaveValue(originalValue))
+    expect(attacksApi.submitMessageSend).not.toHaveBeenCalled()
   })
 
   it('should leave an unsaved draft available when another saved attack is opened', async () => {
